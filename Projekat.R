@@ -1,5 +1,15 @@
+library(biclust)
+library(BicARE)
+library(foreign)
+library(cluster)
 library(readxl)
 library(glmnet)
+library(dplyr)
+library(REdaS)
+library(psych)
+library(survival)
+library(survminer)
+library(readxl)
 library(dplyr)
 
 # 1 - Europe 2- NorthAmerica 3-Asia
@@ -9,7 +19,7 @@ library(dplyr)
 #######################
 
 # Ucitavanje
-df <- read_excel("Arcadis.xlsx")
+df <- read_excel(file.choose())
 
 # X i y
 X <- as.matrix(df[, c("education","crime","health","affordability","Energy","Greenspace")])
@@ -17,7 +27,7 @@ y <- df$Tourism
 
 # Ridge CV (lambda.min i lambda.1se)
 set.seed(123)
-ridge_cv <- cv.glmnet(X, y, alpha = 0, standardize = TRUE, nfolds = 10)
+ridge_cv <- cv.glmnet(X, y, family = "gaussian", alpha = 0)
 
 lambda_min <- ridge_cv$lambda.min
 lambda_1se <- ridge_cv$lambda.1se
@@ -52,7 +62,7 @@ y_sub <- df_sub$Tourism
 
 # Ridge CV na podskupu + predikcije i abs_err
 set.seed(123)
-ridge_cv_sub <- cv.glmnet(X_sub, y_sub, alpha = 0, standardize = TRUE, nfolds = 10)
+ridge_cv_sub <- cv.glmnet(X_sub, y_sub, alpha = 0, family="gaussian")
 
 pred_sub <- as.numeric(predict(ridge_cv_sub, s = "lambda.min", newx = X_sub))
 abs_err_sub <- abs(y_sub - pred_sub)
@@ -103,12 +113,7 @@ shapiro_asia <- shapiro.test(asia_val)
 shapiro_europe
 shapiro_asia
 
-# Izbor testa i sprovođenje
-install.packages("coin")
-library(coin)
-
-# oba normalna t-test (p > 0.05)
-# Ako bar jedan nije Man Whitney (Wilcoxon)
+# Izbor testa i sprovođenje,oba normalna t-test (p > 0.05),Ako bar jedan nije Man Whitney (Wilcoxon)
 shapiro_europe$p.value
 shapiro_asia$p.value
 # Zakljucak: Raspodela NIJE normalna (bar jedno p < 0.05). Koristimo Mann Whitney test,inace t-test
@@ -182,7 +187,10 @@ crime_thresholds <- c(0.8, 0.9, 0.95)
 
 # Prazna tabela za rezultate
 rez_c <- data.frame()
-
+df_final <- df_sub_c %>% filter(crime < 0.9)
+df_final
+n_eu <- length(vals_eu)
+n_eu
 for (thr in crime_thresholds) {
   
   df_final <- df_sub_c %>% filter(crime < thr)
@@ -280,17 +288,11 @@ sh2_as
 fit_aov <- aov(Tourism ~ as.factor(Continent), data = df2)
 summary(fit_aov)
 
-# Post-Hoc test Tukey
-TukeyHSD(fit_aov)
-
+# Ne radi se post-hoc zato sto anova nije pokazala stat znac razl (0.388)
 
 #######################
 ###### Zadatak 4 ######
 #######################
-
-
-# Ucitavanje biblioteke
-library(cluster)
 
 # Matrica indikatora + standardizacija
 vars <- c("health","affordability","Energy","Easeofdoingbusiness","Connectivity")
@@ -300,7 +302,7 @@ Xz <- scale(X)
 ############################################
 # pam (k=3) na celom skupu
 ############################################
-pamcluster <- pam(Xz, k = 3)  # podrazumevana metrika: Euclidean
+pamcluster <- pam(Xz, k = 3,stand=TRUE)  # podrazumevana metrika: Euclidean
 
 # Broj gradova u klasterima
 cl_sizes <- table(pamcluster$clustering)
@@ -313,6 +315,8 @@ df$City[pamcluster$id.med]
 sil_val <- pamcluster$silinfo$avg.width
 sil_val
 
+sil_info <- silhouette(pamcluster)
+cat("Prosecna vrednost Silhouette koeficijenta:", mean(sil_info[, "sil_width"]), "\n")
 # Prosecan health,Energy,Connectivity
 health_means <- tapply(df$health, pamcluster$clustering, mean)
 energy_means <- tapply(df$Energy, pamcluster$clustering, mean)
@@ -348,53 +352,41 @@ min_conn_value
 ### Tabela 1
 #tourism_med i crime_med
 
-tourism_med = median(df$Tourism)
-crime_med = median(df$crime)
+# definisanje indikatora 
+vars2 <- c("health", "affordability", "Energy", "Easeofdoingbusiness", "Connectivity")
 
-# subset df_sub_tour_crime
-df_sub_tour_crime = df[df$Tourism > tourism_med & df$crime < crime_med,]
-# pam nad df_sub_tour_crime
-X_sub_tour_crime   <- as.matrix(df_sub_tour_crime[, vars])
-Xz_sub_tour_crime  <- scale(X_sub_tour_crime)
-pamcluster2 <- pam(Xz_sub_tour_crime, k = 3)  # podrazumevana metrika: Euclidean
+#tourism_med i crime_med
+med_tourism <- median(df$Tourism, na.rm = TRUE)
+med_crime <- median(df$crime, na.rm = TRUE)
 
-# for petlja za popunjavanje tabele
-tab1 <- data.frame(
-  Klaster = 1:3,
-  Medoid = "",
-  Najudaljeniji_grad = "",
-  Rastojanje_do_njega = 0,
-  Broj_gradova_u_klasteru = 0,
-  stringsAsFactors = FALSE
-)
+podskup1 <- df[df$Tourism > med_tourism & df$crime < med_crime, ]
 
-for (k in 1:3) {
-  # izdvoji gradove u vektor koji su u datom klasteru k 
-  idx_k <- which(pamcluster2$clustering == k)
-  tab1$Broj_gradova_u_klasteru[k] <- length(idx_k)
+# PAM klasterizacija
+set.seed(123)
+pam_eucl <- pam(podskup1[, vars2], k = 3, metric = "euclidean", stand = TRUE)
+
+# pronalazenje najudaljenijih gradova
+dist_matrix <- as.matrix(daisy(podskup1[, vars2], metric = "euclidean", stand = TRUE))
+
+for (i in 1:3) {
+  clanovi_klastera <- which(pam_eucl$clustering == i)
+  medoid_idx <- pam_eucl$id.med[i]
   
-  # indeks medoida 
-  med_idx <- pamcluster2$id.med[k]
-  tab1$Medoid[k] <- df_sub_tour_crime$City[med_idx]
+  rastojanja <- dist_matrix[clanovi_klastera, medoid_idx]
+  max_dist_idx <- clanovi_klastera[which.max(rastojanja)]
   
-  # rastojanja od medoida do svih gradova u tom klasteru (euclidean u Xz)
-  med_vec <- Xz_sub_tour_crime[med_idx, ]
-  dists <- sqrt(rowSums((Xz_sub_tour_crime[idx_k, , drop=FALSE] - med_vec)^2))
-  
-  # najudaljeniji grad
-  far_pos <- which.max(dists)
-  far_idx <- idx_k[far_pos]
-  
-  tab1$Najudaljeniji_grad[k] <- df_sub_tour_crime$City[far_idx]
-  tab1$Rastojanje_do_njega[k] <- dists[far_pos]
+  cat("\nKlaster:", i)
+  cat("\nMedoid:", podskup1$City[medoid_idx])
+  cat("\nNajudaljeniji grad:", podskup1$City[max_dist_idx])
+  cat("\nRastojanje:", round(max(rastojanja), 4))
+  cat("\nBroj gradova:", length(clanovi_klastera), "\n")
 }
-
-tab1
 
 ###########
 
 # health_med
 health_med = median(df$health)
+tourism_med = median(df$Tourism)
 
 # subset df_sub_health
 df_sub_health = df[df$health > health_med,]
@@ -435,9 +427,7 @@ for (cc in c(1,2,3)) {
 
 tab3
 
-
 # Tabela 4: Euclidean vs Manhattan k=3
-
 
 # Napravi praznu tabelu kao u zadatku
 tab4 <- data.frame(
@@ -471,7 +461,6 @@ for (i in 1:2) {
 tab4
 
 # Bolja metrika
-
 if (tab4$avg_sill_score[1] >= tab4$avg_sill_score[2]) {
   bolja_metrika <- "Euclidean"
 } else {
@@ -497,492 +486,259 @@ medoidi_best
 #######################
 ###### Zadatak 5 ######
 #######################
-  
-library(REdaS)
 
-data.use <- df[, c("health","affordability","Energy","Easeofdoingbusiness","Connectivity")]
-matrixdata <- data.matrix(data.use)
+indicators <- df[, c("demographics", "education", "income_inequality", "work_life_balance", 
+                     "crime", "health", "affordability", "Environmentalrisks", "Energy", 
+                     "Greenspace", "Airpollution", "Greenhousegases", "Wastemanagement", 
+                     "Drinkingwaterandsanitation", "Transportinfrastructure", 
+                     "Economicdevelopment", "Easeofdoingbusiness", "Tourism", 
+                     "Connectivity", "Employment")]
+# Testovi pogod
+print(cortest.bartlett(cor(indicators, use="complete.obs"), n = nrow(indicators)))
+print(KMO(cor(indicators, use="complete.obs")))
 
-# Bartlett test of sphericity
-bart_spher(matrixdata)
+# kum var
+ev_all <- eigen(cor(indicators, use="complete.obs"))$values
+cumulative_variance <- (cumsum(ev_all)/sum(ev_all))
 
-# KMO (MSA)
-KMOS(matrixdata)
+names(cumulative_variance) <- paste0("MR", 1:length(cumulative_variance))
+print(round(cumulative_variance, 4))
 
-# korelaciona matrica (FA se radi na korelaciji)
-R <- cor(matrixdata)   
+limit <- 0.70
+n_factors <- which(cumulative_variance >= limit)[1]
+print(n_factors)
 
-# eigenvalues (silazno
-ev <- eigen(R)$values     
+# PCA
+set.seed(123)
+pca_res <- principal(indicators, nfactors = 4, rotate = "varimax", scores = TRUE)
 
-# % objasnjene varijanse (sum(ev)=broj varijabli)
-prop_var <- ev / sum(ev)             
-cum_var  <- cumsum(prop_var)         
+print(pca_res$loadings, cut = 0)
 
-tab_ev <- data.frame(
-  Faktor = 1:length(ev),
-  Eigenvalue = round(ev, 4),
-  Proportion = round(prop_var, 4),
-  Cumulative = round(cum_var, 4)
-)
-tab_ev
+cat("\nSortirani komunaliteti:\n")
+print(sort(pca_res$communality))
 
-# minimalan broj faktora da kumulativno objasni >= 70%
-n_factors_70 <- which(cum_var >= 0.70)[1]
-n_factors_70
+cat("\nProsecna komunalnost po faktorima:\n")
+print(colSums(pca_res$loadings^2) / nrow(pca_res$loadings))
 
-library(psych)
-
-# faktorska analiza
-fa4 <- fa(r = matrixdata, nfactors = 4, rotate = "varimax", fm = "ml", scores = "regression")
-
-L <- as.matrix(unclass(fa4$loadings))
-comm <- fa4$communality
-
-# provera kako se faktori zovu i koliko ih ima
-colnames(L)
-dim(L)
-
-# "MR1" = prva kolona (kako god da se zove)
-MR1_name <- colnames(L)[1]
-
-# MR1 najvece |loading|
-abs_MR1 <- abs(L[, MR1_name])
-var_MR1 <- names(which.max(abs_MR1))
-var_MR1
-val_MR1 <- L[var_MR1, MR1_name]
-val_MR1
-
-# najlosije objasnjena (min communality)
-var_min_comm <- names(which.min(comm))
-var_min_comm
-val_min_comm <- comm[var_min_comm]
-val_min_comm
-
-# communality health i %
-comm_health <- comm["health"]
-comm_health
-perc_health <- 100 * comm_health
-perc_health
-
-# visok MR1 skor i nizak affordability: biznis smer po korelaciji MR1 i Easeofdoingbusiness
-mr1_score <- as.numeric(fa4$scores[, 1])
-cor_mr1_ease <- cor(mr1_score, df$Easeofdoingbusiness)
-biznis_txt <- ifelse(cor_mr1_ease > 0, "visoko razvijen za biznis", "nisko razvijen za biznis")
-biznis_txt
-
-# Faktor sa najvecom prosec. komunalnoscu + 2 top var po |loading| 
-
-# SS loadings po faktoru
-ss_load <- colSums(L^2)
-
-# average communality po faktoru 
-avg_comm_factor <- ss_load / nrow(L)
-avg_comm_factor
-
-# faktor sa max average communality
-best_fac <- names(which.max(avg_comm_factor))
-best_fac
-best_val <- avg_comm_factor[best_fac]
-best_val
-
-# dve promenljive sa najvećim |loading| na tom faktoru
-ord2 <- order(abs(L[, best_fac]), decreasing = TRUE)[1:2]
-top_var1 <- rownames(L)[ord2[1]]
-top_var2 <- rownames(L)[ord2[2]]
-top_var1
-top_var2
-
-
-# Tabela: grad sa najvećim skorom za svaki faktor 
-
-scores_df <- as.data.frame(fa4$scores)
-scores_df$City <- df$City
-
-tab_city_max <- data.frame(
-  Faktor = colnames(scores_df)[1:4],   # 4 faktora kako god da se zovu
-  Grad = "",
-  Skor = NA_real_,
-  stringsAsFactors = FALSE
-)
-
-for (i in 1:4) {
-  f <- tab_city_max$Faktor[i]
-  idx <- which.max(scores_df[[f]])
-  tab_city_max$Grad[i] <- scores_df$City[idx]
-  tab_city_max$Skor[i] <- scores_df[[f]][idx]
+skorovi_pca <- as.data.frame(pca_res$scores)
+skorovi_pca$City <- df$City
+for(i in 1:4) {
+  f_ime <- paste0("RC", i)
+  naj_grad <- skorovi_pca[order(skorovi_pca[[f_ime]], decreasing = TRUE)[1], ]
+  cat(f_ime, ":", naj_grad$City, "скор:", round(naj_grad[[f_ime]], 6), "\n")
 }
 
-tab_city_max
-tab_city_max$Faktor <- c("MR1","MR2","MR3","MR4")
-tab_city_max$Skor <- round(tab_city_max$Skor, 3)
-tab_city_max
+evropa_df <- df[df$Continent == 1, ]
+q_tourism <- quantile(evropa_df$Tourism, 0.75, na.rm = TRUE)
+cat("\nGornji kvartil za evropu:", q_tourism, "\n")
 
+top_ev_mask <- df$Continent == 1 & df$Tourism >= q_tourism & !is.na(df$Tourism)
+top_ev_podaci <- df[top_ev_mask, ]
+top_ev_skorovi <- skorovi_pca[top_ev_mask, ]
 
-# Evropa + gornji kvartil Tourism (u Evropi) + cor sa MR1..MR4
-
-# Europe subset
-df_eu <- df[df$Continent == 1, ]
-
-# q75 unutar Evrope
-q75_eu <- quantile(df_eu$Tourism, 0.75)
-q75_eu
-
-# podskup: Evropa & Tourism >= q75_eu
-idx_eu_top <- which(df$Continent == 1 & df$Tourism >= q75_eu)
-
-# skorovi na tom podskupu
-scores_top <- scores_df[idx_eu_top, ]
-tour_top <- df$Tourism[idx_eu_top]
-
-# cor(Tourism, svaki faktor) for petlja
-cors <- data.frame(
-  Faktor = c("MR1","MR2","MR3","MR4"),
-  Cor = NA_real_,
-  stringsAsFactors = FALSE
-)
-
-for (i in 1:4) {
-  cors$Cor[i] <- cor(tour_top, scores_top[[i]])
+cat("Korelacije izmedju turizma i faktora")
+for(i in 1:4) {
+  f_ime <- paste0("RC", i)
+  kor <- cor(top_ev_podaci$Tourism, top_ev_skorovi[[f_ime]], use = "complete.obs")
+  cat(f_ime, ":", round(kor, 8), "\n")
 }
 
-cors$Cor <- round(cors$Cor, 4)
-cors
+vars_3 <- c("health", "affordability", "Energy", "Easeofdoingbusiness", "Connectivity")
+kont_mapa <- list("Europe" = 1, "North America" = 2, "Asia" = 3)
 
-# faktor sa najvecom |cor|
-best_i <- which.max(abs(cors$Cor))
-best_cor_fac <- cors$Faktor[best_i]
-best_cor_fac
-best_cor_val <- cors$Cor[best_i]
-best_cor_val
-
-
-# analiza pogodnosti i faktorska analiza za svaki kontinent posebno
-cont_codes <- c(1,2,3)
-
-rez <- data.frame(
-  Kontinenti = cont_codes, # 1 eu 2 na 3as
-  n = NA_integer_,
-  Bartlett_p = NA_real_,
-  KMO_MSA_value = NA_real_,
-  n_factors = NA_integer_,
-  top_communality_variable = "",
-  Comm_value = NA_real_,
-  stringsAsFactors = FALSE
-)
-
-for (i in 1:3) {
-  cc <- cont_codes[i]
-  df_c <- df[df$Continent == cc, vars]
+for(k_ime in names(kont_mapa)) {
+  k_kod <- kont_mapa[[k_ime]]
+  temp <- na.omit(df[df$Continent == k_kod, vars_3])
   
-  rez$n[i] <- nrow(df_c)
+  cat("Bartlett p:", cortest.bartlett(cor(temp), n = nrow(temp))$p.value, "\n")
+  cat("KMO MSA:", round(psych::KMO(cor(temp))$MSA, 3), "\n")
   
-  mat <- data.matrix(df_c)
-  
-  b <- bart_spher(mat)
-  rez$Bartlett_p[i] <- as.numeric(b$p.value)
-  
-  k <- KMOS(mat)
-  rez$KMO_MSA_value[i] <- as.numeric(k$MSA)
-  
-  R <- cor(mat)
-  ev <- eigen(R)$values
-  nf <- sum(ev > 1)
-  if (nf < 1) nf <- 1
-  rez$n_factors[i] <- nf
-  
-  fa_c <- fa(r = mat, nfactors = nf, rotate = "varimax", fm = "ml")
-  comm <- fa_c$communality
-  
-  top_var <- names(which.max(comm))
-  top_val <- as.numeric(comm[top_var])
-  
-  rez$top_communality_variable[i] <- top_var
-  rez$Comm_value[i] <- top_val
+  nf <- sum(eigen(cor(temp))$values > 1) # Kaiser
+  pca_k <- principal(temp, nfactors = nf, rotate = "varimax")
+  top_c <- sort(pca_k$communality, decreasing = TRUE)[1]
+  cat("Broj faktora:", nf, "\n")
+  cat("Najveci komunalitet:", names(top_c), "=", round(top_c, 3), "\n")
 }
 
-rez$Bartlett_p <- round(rez$Bartlett_p, 6)
-rez$KMO_MSA_value <- round(rez$KMO_MSA_value, 4)
-rez$Comm_value <- round(rez$Comm_value, 4)
+set.seed(123)
+fa_final <- fa(indicators, nfactors = 4, rotate = "varimax", fm = "minres", scores = "regression")
+skorovi_fa <- as.data.frame(fa_final$scores)
+skorovi_fa$City <- df$City
 
-rez
+q_conn <- quantile(df$Connectivity, 0.75, na.rm = TRUE)
+q_aff  <- quantile(df$affordability, 0.25, na.rm = TRUE)
 
-# FA na celom skupu (nfactors=4, varimax, scores="regression" uradjeno ranije
+f_idx <- which(df$Connectivity >= q_conn & df$affordability <= q_aff)
+podskup_finalni <- skorovi_fa[f_idx, ]
 
-scores_df <- as.data.frame(fa4$scores)
-colnames(scores_df) <- c("MR1","MR2","MR3","MR4")
+cat("\nProsecni skorovi\n")
+print(colMeans(podskup_finalni[, 1:4]))
 
-q_conn_75 <- as.numeric(quantile(df$Connectivity, 0.75))
-q_aff_25  <- as.numeric(quantile(df$affordability, 0.25))
+odabrani_f <- "MR4"
+top_5_final <- podskup_finalni[order(podskup_finalni[[odabrani_f]], decreasing = TRUE), ]
+top_5_final <- head(top_5_final, 5)
 
-idx_sub <- which(df$Connectivity >= q_conn_75 & df$affordability <= q_aff_25)
-
-scores_sub <- scores_df[idx_sub, ]
-tour_sub <- df$Tourism[idx_sub]
-
-mean_scores <- data.frame(
-  Faktor = c("MR1","MR2","MR3","MR4"),
-  MeanScore = NA_real_,
-  stringsAsFactors = FALSE
-)
-
-for (i in 1:4) {
-  mean_scores$MeanScore[i] <- mean(scores_sub[[i]])
-}
-
-mean_scores$MeanScore <- round(mean_scores$MeanScore, 4)
-mean_scores
-
-best_i <- which.max(abs(mean_scores$MeanScore)) # vraca index 
-best_factor <- mean_scores$Faktor[best_i] # mean_scores - df Faktor je kolona 
-best_factor
-best_value <- mean_scores$MeanScore[best_i]
-best_value
-
-# Top 5 gradova po izabranom faktoru (smer proseka)
-
-df_scores_all <- cbind(df, scores_df)
-
-if (best_value >= 0) {
-  top5 <- df_scores_all %>%
-    arrange(desc(.data[[best_factor]])) %>%
-    slice(1:5)
-} else {
-  top5 <- df_scores_all %>%
-    arrange(.data[[best_factor]]) %>%
-    slice(1:5)
-}
-
-top5_table <- data.frame(
+rezultat_tab <- data.frame(
   Rang = 1:5,
-  Grad = top5$City,
-  Kontinent = ifelse(top5$Continent == 1, "Eu",
-                     ifelse(top5$Continent == 2, "Na", "Аzija")),
-  Tourism = top5$Tourism,
-  Odabrani_faktor = best_factor,
-  Score = round(top5[[best_factor]], 4),
-  stringsAsFactors = FALSE
+  Grad = top_5_final$City,
+  Kontinent = df$Continent[match(top_5_final$City, df$City)],
+  Tourism = df$Tourism[match(top_5_final$City, df$City)],
+  Faktor = "MR4",
+  Score = round(top_5_final[[odabrani_f]], 3)
 )
 
-top5_table
+rezultat_tab$Kontinent <- factor(rezultat_tab$Kontinent, levels=c(1,2,3), 
+                                 labels=c("Evropa", "Severna Amerika", "Azija"))
 
+
+print(rezultat_tab)
 
 #######################
 ###### Zadatak 6 ######
 #######################
 
-library(survival)
-library(survminer)
-library(readxl)
-library(dplyr)
-
-# Ucitavanje
 lung <- read_excel("plucaSurvival.xlsx")
-
-# event: 1 ako je status==2, inace 0
 lung$event <- ifelse(lung$status == 2, 1, 0)
+broj_dogadjaja <- sum(lung$event)
+print(paste("Ukupan broj hazardnih događaja (smrtnih ishoda):", broj_dogadjaja))
 
-# faktor za pol (1=muskarac, 2=zena)
-lung$sexF <- factor(lung$sex, levels = c(1,2), labels = c("Muskarac","Zena"))
+# medijalno vreme za ceo skup
+fit_total <- survfit(Surv(time, event) ~ 1, data = lung)
+print(fit_total)
 
+# Log-rank test za razliku po polovima
+log_rank <- survdiff(Surv(time, event) ~ sex, data = lung)
+print(log_rank)
 
-# 1) Osnovno: n, events, median
+# Coxov model proporcionalnih hazarda
+cox_model <- coxph(Surv(time, event) ~ sex, data = lung)
+res_cox <- summary(cox_model)
 
-n_obs <- nrow(lung)
-n_events <- sum(lung$event)
+print(res_cox)
 
-fit_all <- survfit(Surv(time, event) ~ 1, data = lung)
-median_all <- summary(fit_all)$table["median"]
+hr <- res$conf.int[1]
+procenat <- round((1 - hr) * 100, 2)
+cat("Zene imaju", procenat, "% manji rizik od muskaraca.\n")
 
-n_obs
-n_events
-median_all
+# kreiranje multivarijantnog Cox PH modela
+cox_multi <- coxph(Surv(time, event) ~ sex + age + ph.ecog, data = lung)
+res_summary <- summary(cox_multi)
+print(res_summary)
 
+# tab1
 
-# 2) KM po polu + log-rank
+kvantili <- quantile(lung$age, probs = seq(0, 1, 1/3), na.rm = TRUE)
+lung$AgeGroup <- cut(lung$age, breaks = kvantili, 
+                     labels = c("Low", "Medium", "High"), 
+                     include.lowest = TRUE)
 
-fit_sex <- survfit(Surv(time, event) ~ sexF, data = lung)
+# Log-rank test za AgeGroup
+test_age <- survdiff(Surv(time, event) ~ AgeGroup, data = lung)
+print(test_age) 
 
-lr_sex <- survdiff(Surv(time, event) ~ sexF, data = lung)
-chisq_lr <- lr_sex$chisq
-p_lr <- 1 - pchisq(chisq_lr, df = length(lr_sex$n) - 1)
-
-chisq_lr
-p_lr
-
-# medijane po polu (za informaciju)
-summary(fit_sex)$table[, "median"]
-
-
-# 3) Cox PH (jednovarijantni) - pol
-
-cox_sex <- coxph(Surv(time, event) ~ sexF, data = lung)
-sum_cox_sex <- summary(cox_sex)
-
-hr_sex_uni <- sum_cox_sex$conf.int[1, "exp(coef)"]
-p_sex_uni <- sum_cox_sex$coefficients[1, "Pr(>|z|)"]
-
-hr_sex_uni
-p_sex_uni
-
-
-# 4) Cox PH (multivarijantni) - sex + age + ph.ecog
-
-lung2 <- lung %>% filter(!is.na(ph.ecog), !is.na(age), !is.na(sex))
-
-cox_multi <- coxph(Surv(time, event) ~ sexF + age + ph.ecog, data = lung2)
-sum_multi <- summary(cox_multi)
-
-HR_sex <- sum_multi$conf.int["sexFZena", "exp(coef)"]
-HR_age <- sum_multi$conf.int["age", "exp(coef)"]
-HR_ecog <- sum_multi$conf.int["ph.ecog", "exp(coef)"]
-
-p_sex <- sum_multi$coefficients["sexFZena", "Pr(>|z|)"]
-p_age <- sum_multi$coefficients["age", "Pr(>|z|)"]
-p_ecog <- sum_multi$coefficients["ph.ecog", "Pr(>|z|)"]
-
-HR_sex; HR_age; HR_ecog
-p_sex; p_age; p_ecog
-
-inc_ecog_pct <- (HR_ecog - 1) * 100
-inc_ecog_pct
-
-women_less_pct <- (1 - HR_sex) * 100
-women_less_pct
-
-
-# 5) AgeGroup (tercili) + KM + log-rank + tabela + "najzilavija"
-
-q1 <- quantile(lung$age, 1/3)
-q2 <- quantile(lung$age, 2/3)
-
-lung$AgeGroup <- cut(lung$age,
-                     breaks = c(-Inf, q1, q2, Inf),
-                     labels = c("Low","Medium","High"),
-                     right = FALSE)
-
+# KM analiza po grupama
 fit_age <- survfit(Surv(time, event) ~ AgeGroup, data = lung)
 
-lr_age <- survdiff(Surv(time, event) ~ AgeGroup, data = lung)
-chisq_age <- lr_age$chisq
-p_age_lr <- 1 - pchisq(chisq_age, df = length(lr_age$n) - 1)
+# Verovatnoća preživljavanja u t = 365
+summary_365 <- summary(fit_age, times = 365)
 
-chisq_age
-p_age_lr
-
-# tabela po grupama: n, events, median, S(365)
-sum_age <- summary(fit_age)$table
-tab1 <- data.frame(
-  AgeGroup = rownames(sum_age),
-  n = sum_age[, "records"],
-  events = sum_age[, "events"],
-  median_survival = sum_age[, "median"],
-  stringsAsFactors = FALSE
+izvestaj_age <- summary(fit_age)$table
+tabela1 <- data.frame(
+  AgeGroup = c("Low", "Medium", "High"),
+  n = izvestaj_age[, "records"],
+  events = izvestaj_age[, "events"],
+  median_survival = izvestaj_age[, "median"],
+  S_365 = summary(fit_age, times = 365)$surv
 )
 
-S365 <- summary(fit_age, times = 365)$surv
-grp365 <- gsub("AgeGroup=", "", summary(fit_age, times = 365)$strata)
-S365_df <- data.frame(AgeGroup = grp365, S_365 = S365)
+print(tabela1)
 
-tab1 <- left_join(tab1, S365_df, by = "AgeGroup")
-tab1
+# tab2
 
-# najzilavija (najveca medijana)
-best_group <- tab1$AgeGroup[which.max(tab1$median_survival)]
-best_group
+m_high <- tabela1$median_survival[tabela1$AgeGroup == "High"]
+m_low  <- tabela1$median_survival[tabela1$AgeGroup == "Low"]
+m_med  <- tabela1$median_survival[tabela1$AgeGroup == "Medium"]
 
-# delta i extra_days_per_month (u odnosu na druge dve)
-best_med <- tab1$median_survival[tab1$AgeGroup == best_group]
-others <- tab1 %>% filter(AgeGroup != best_group)
+# low
+delta_low <- m_high - m_low
+extra_low <- delta_low / (m_low / 30)
 
-tab2 <- data.frame(
-  Najzilavija_Grupa = best_group,
-  Preostala_grupa = others$AgeGroup,
-  Median_days_Najzilavija = best_med,
-  Median_days_Preostala = others$median_survival,
-  Delta_days = best_med - others$median_survival,
-  Extra_days_per_month = (best_med - others$median_survival) / (others$median_survival/30)
+# medium
+delta_med <- m_high - m_med
+extra_med <- delta_med / (m_med / 30)
+
+tabela2 <- data.frame(
+  Najzilavija_Grupa = "High",
+  Preostala_grupa = c("Low", "Medium"),
+  Median_Najzilavija = c(m_high, m_high),
+  Median_Preostala = c(m_low, m_med),
+  Delta_days = c(delta_low, delta_med),
+  Extra_days_per_month = c(extra_low, extra_med)
 )
 
-tab2
+print(round(tabela2[, 3:6], 4))
 
 
-# 6) Cutoff search (zene & ph.ecog<=1) + log-rank po cutoff + najbolji cutoff
+# 2. deo nastavak
+sub_data <- lung[lung$sex == 2 & lung$ph.ecog <= 1, ]
+sub_data <- na.omit(sub_data)
 
-sub <- lung2 %>% filter(sexF == "Zena", ph.ecog <= 1)
 
-qs <- c(0.20,0.30,0.40,0.50,0.60,0.70,0.80)
-cuts <- as.numeric(quantile(sub$age, qs))
+kvantili_nivoi <- c(0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80)
+cutoff_kandidati <- quantile(sub_data$age, probs = kvantili_nivoi)
 
-n_min <- 5
-events_min <- 5
+najbolji_chisq <- 0
+najbolji_cutoff <- 0
 
-cut_res <- data.frame(cutoff = cuts, chisq = NA_real_, p_value = NA_real_,
-                      n_low = NA_integer_, ev_low = NA_integer_,
-                      n_high = NA_integer_, ev_high = NA_integer_)
-
-for (i in 1:nrow(cut_res)) {
-  c0 <- cut_res$cutoff[i]
-  sub$AgeBin <- ifelse(sub$age < c0, paste0("<", round(c0,3)), paste0(">=", round(c0,3)))
+# petlja za trazenje najboljeg cutoff-a
+for (cut in cutoff_kandidati) {
   
-  n_low <- sum(sub$age < c0)
-  n_high <- sum(sub$age >= c0)
-  ev_low <- sum(sub$event[sub$age < c0])
-  ev_high <- sum(sub$event[sub$age >= c0])
+  privremena_grupa <- ifelse(sub_data$age < cut, "Mladji", "Stariji")
+  n_mladi <- sum(privremena_grupa == "Mladji")
+  n_stari <- sum(privremena_grupa == "Stariji")
+  e_mladi <- sum(sub_data$event[privremena_grupa == "Mladji"])
+  e_stari <- sum(sub_data$event[privremena_grupa == "Stariji"])
   
-  cut_res$n_low[i] <- n_low
-  cut_res$n_high[i] <- n_high
-  cut_res$ev_low[i] <- ev_low
-  cut_res$ev_high[i] <- ev_high
-  
-  if (n_low >= n_min && n_high >= n_min && ev_low >= events_min && ev_high >= events_min) {
-    lr <- survdiff(Surv(time, event) ~ AgeBin, data = sub)
-    chisq <- lr$chisq
-    pval <- 1 - pchisq(chisq, df = 1)
-    cut_res$chisq[i] <- chisq
-    cut_res$p_value[i] <- pval
+  if (n_mladi >= 5 & n_stari >= 5 & e_mladi >= 5 & e_stari >= 5) {
+    
+    test <- survdiff(Surv(time, event) ~ privremena_grupa, data = sub_data)
+    trenutni_chi <- test$chisq
+    if (trenutni_chi > najbolji_chisq) {
+      najbolji_chisq <- trenutni_chi
+      najbolji_cutoff <- cut
+    }
   }
 }
 
-cut_res
+cat("Najbolji cutoff je:", najbolji_cutoff, "\n")
+cat("Vrednost Chisq:", najbolji_chisq, "\n")
 
-best_i <- which.max(cut_res$chisq)
-best_cut <- cut_res$cutoff[best_i]
-best_chisq <- cut_res$chisq[best_i]
-best_p <- cut_res$p_value[best_i]
+# rucno postavljamo AgeBin prema najboljem rez
+sub_data$AgeBin <- ifelse(sub_data$age < 63.7, "Below < 63.7", "Above > 63.7")
 
-best_cut
-best_chisq
-best_p
+fit_finalni <- survfit(Surv(time, event) ~ AgeBin, data = sub_data)
+test_finalni <- survdiff(Surv(time, event) ~ AgeBin, data = sub_data)
+statistika <- summary(fit_finalni)$table
+s365_rezultat <- summary(fit_finalni, times = 365)$surv
 
-# sumarno za optimalni cutoff
-sub$AgeBin <- ifelse(sub$age < best_cut, paste0("age < ", round(best_cut,3)), paste0("age >= ", round(best_cut,3)))
-fit_bin <- survfit(Surv(time, event) ~ AgeBin, data = sub)
-
-tab_bin <- summary(fit_bin)$table
-tab_bin2 <- data.frame(
-  AgeBin = rownames(tab_bin),
-  n = tab_bin[, "records"],
-  events = tab_bin[, "events"],
-  median_survival = tab_bin[, "median"],
-  stringsAsFactors = FALSE
+# tab 3
+tabela_rezultata <- data.frame(
+  AgeBin = rownames(statistika),
+  n = statistika[, "records"],
+  events = statistika[, "events"],
+  median_survival = statistika[, "median"],
+  S_365 = s365_rezultat
 )
-
-S365b <- summary(fit_bin, times = 365)$surv
-grp365b <- gsub("AgeBin=", "", summary(fit_bin, times = 365)$strata)
-S365b_df <- data.frame(AgeBin = grp365b, S_365 = S365b)
-
-tab_bin2 <- left_join(tab_bin2, S365b_df, by = "AgeBin")
-tab_bin2
+print(tabela_rezultata)
+p_vrednost <- 1 - pchisq(test_finalni$chisq, 1)
+cat("P-value za log-rank test iznosi:", round(p_vrednost, 4), "\n")
 
 
 #######################
 ###### Zadatak 7 ######
 #######################
 
-library(biclust)
-library(BicARE)
-library(foreign)
+
 
 food_data <- read.spss(file.choose(), to.data.frame = TRUE)
 
@@ -1131,116 +887,87 @@ najbolji_biklaster
 ###### Zadatak 8 ######
 #######################
 
-# Kreiranje kategorije EmploymentCategory
-df$EmploymentCategory <- cut(
-  df$Employment,
-  breaks = c(-Inf, 0.3, 0.6, Inf),
-  labels = c("low", "medium", "high")
-)
+Arcadis_log <- df
 
-# Broj instanci po kategorijama
-table(df$EmploymentCategory)
+# kreiranje kategorickih varijabli
+Arcadis_log$EmploymentCategory <- cut(Arcadis_log$Employment, 
+                                           breaks = c(-Inf, 0.3, 0.6, Inf), 
+                                           labels = c("low", "medium", "high"),
+                                           include.lowest = TRUE)
 
+Arcadis_log$EducationCategory <- cut(Arcadis_log$education, 
+                                          breaks = c(-Inf, 0.4, 0.6, Inf), 
+                                          labels = c("low", "medium", "high"),
+                                          include.lowest = TRUE)
 
-# Kreiranje kategorije EducationCategory
-df$EducationCategory <- cut(
-  df$education,
-  breaks = c(-Inf, 0.4, 0.6, Inf),
-  labels = c("low", "medium", "high")
-)
+# kreiranje binarne ciljne varijable
+Arcadis_log$HighEmployment <- ifelse(Arcadis_log$EmploymentCategory == "high", 1, 0)
 
-# Broj instanci po kategorijama
-table(df$EducationCategory)
+# provera instanci
+cat("Broj instanci EmploymentCategory:\n")
+print(table(Arcadis_log$EmploymentCategory))
 
-# Kreiranje binarne varijable HighEmployment
-df$HighEmployment <- ifelse(df$EmploymentCategory == "high", 1, 0)
+cat("Broj instanci EducationCategory:\n")
+print(table(Arcadis_log$EducationCategory))
 
-# Broj instanci po vrednostima
-table(df$HighEmployment)
+cat("Broj instanci HighEmployment (0 i 1):\n")
+print(table(Arcadis_log$HighEmployment))
 
-# Statisticki znac prediktori: 
-# LR
-model <- glm(HighEmployment ~ crime + Drinkingwaterandsanitation +
-               Airpollution + Energy + Greenspace + EducationCategory,
-             data = df, family = binomial)
+# kreiranje modela na celom skupu
+model_ceo <- glm(HighEmployment ~ crime + Drinkingwaterandsanitation + Airpollution + 
+                   Energy + Greenspace + EducationCategory, 
+                 data = Arcadis_log, family = binomial)
 
-# model summarry
-summary(model)
+summary(model_ceo)
 
-# exp(3.0260) = 20.6
+odds_ratios <- exp(coef(model_ceo))
+print(round(odds_ratios, 4))
 
-# Metike (threshold = 0.5)
+# evaluacija na celom skupu
+probs_ceo <- predict(model_ceo, type = "response")
+preds_ceo <- ifelse(probs_ceo > 0.5, 1, 0)
+cm_ceo <- table(Actual = Arcadis_log$HighEmployment, Predicted = factor(preds_ceo, levels = c(0, 1)))
 
-library(caret)
+acc_ceo <- sum(diag(cm_ceo)) / sum(cm_ceo)
+prec_ceo <- cm_ceo[2,2] / sum(cm_ceo[,2])
+rec_ceo <- cm_ceo[2,2] / sum(cm_ceo[2,])
+f1_ceo <- 2 * (prec_ceo * rec_ceo) / (prec_ceo + rec_ceo)
 
-# LR na ceo skup
-log_model <- glm(HighEmployment ~ crime + Drinkingwaterandsanitation +
-                   Airpollution + Energy + Greenspace + EducationCategory,
-                 data = df, family = binomial)
+cat(paste("Accuracy:", round(acc_ceo, 3), "Precision:", round(prec_ceo, 3), 
+          "Recall:", round(rec_ceo, 3), "F1:", round(f1_ceo, 3), "\n"))
 
-# predikcija verovatnoca
-pred_probs <- predict(log_model, type = "response")
+# eval za 10 seedova
+results_table <- data.frame(Seed=integer(), Accuracy=numeric(), Precision=numeric(), Recall=numeric(), F1=numeric())
 
-# binarne klase (>0.5)
-pred_class <- ifelse(pred_probs > 0.5, 1, 0)
-
-# 4) konfuziona matrica + metrike
-cm <- confusionMatrix(as.factor(pred_class),
-                      as.factor(df$HighEmployment),
-                      positive = "1")
-
-acc0  <- cm$overall["Accuracy"]
-prec0 <- cm$byClass["Precision"]
-rec0  <- cm$byClass["Recall"]
-f10   <- cm$byClass["F1"]
-
-acc0
-prec0 
-rec0 
-f10
-
-
-
-
-# 10 podela train/test (70:30), seed 123-132
-
-rez <- data.frame(
-  Seed = 123:132,
-  Accuracy = NA_real_,
-  Precision = NA_real_,
-  Recall = NA_real_,
-  F1 = NA_real_
-)
-
-n <- nrow(df)
-train_n <- floor(0.7 * n)
-
-for (i in 1:nrow(rez)) {
-  set.seed(rez$Seed[i])
+for (s in 123:132) {
+  set.seed(s)
   
-  idx_train <- sample(1:n, size = train_n, replace = FALSE)
-  train <- df[idx_train, ]
-  test  <- df[-idx_train, ]
+  train_idx <- sample(1:nrow(Arcadis_log), round(0.7 * nrow(Arcadis_log)))
+  train_set <- Arcadis_log[train_idx, ]
+  test_set <- Arcadis_log[-train_idx, ]
   
-  m <- glm(HighEmployment ~ crime + Drinkingwaterandsanitation +
-             Airpollution + Energy + Greenspace + EducationCategory,
-           data = train, family = binomial)
+  model_loop <- glm(HighEmployment ~ crime + Drinkingwaterandsanitation + Airpollution + 
+                      Energy + Greenspace + EducationCategory, 
+                    data = train_set, family = binomial)
   
-  p_test <- predict(m, newdata = test, type = "response")
-  class_test <- ifelse(p_test > 0.5, 1, 0)
+  probs <- predict(model_loop, newdata = test_set, type = "response")
+  preds <- ifelse(probs > 0.5, 1, 0)
   
-  cm_test <- confusionMatrix(as.factor(class_test),
-                             as.factor(test$HighEmployment),
-                             positive = "1")
+  conf_matrix <- table(Actual = test_set$HighEmployment, Predicted = factor(preds, levels = c(0, 1)))
   
-  rez$Accuracy[i]  <- cm_test$overall["Accuracy"]
-  rez$Precision[i] <- cm_test$byClass["Precision"]
-  rez$Recall[i]    <- cm_test$byClass["Recall"]
-  rez$F1[i]        <- cm_test$byClass["F1"]
+  TP <- conf_matrix[2, 2]
+  TN <- conf_matrix[1, 1]
+  FP <- conf_matrix[1, 2]
+  FN <- conf_matrix[2, 1]
+  
+  acc <- (TP + TN) / sum(conf_matrix)
+  prec <- ifelse((TP + FP) > 0, TP / (TP + FP), 0)
+  rec <- ifelse((TP + FN) > 0, TP / (TP + FN), 0)
+  f1 <- ifelse((prec + rec) > 0, 2 * (prec * rec) / (prec + rec), 0)
+  
+  results_table <- rbind(results_table, data.frame(Seed=s, Accuracy=acc, Precision=prec, Recall=rec, F1=f1))
 }
 
-rez_round <- rez
-rez_round[,2:5] <- round(rez_round[,2:5], 3)
-rez_round
+print(round(results_table, 3))
 
-# f1 je metrika za ujednaceno sagledavanje vrlina , iz tabele se vidi da je to seed 128
+# f1 je metrika za ujednaceno sagledavanje vrlina , iz tabele se vidi da je to seed 126
