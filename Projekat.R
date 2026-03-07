@@ -596,7 +596,7 @@ print(rezultat_tab)
 #######################
 ###### Zadatak 6 ######
 #######################
-
+options(digits = 11)
 lung <- read_excel("plucaSurvival.xlsx")
 lung$event <- ifelse(lung$status == 2, 1, 0)
 broj_dogadjaja <- sum(lung$event)
@@ -616,7 +616,7 @@ res_cox <- summary(cox_model)
 
 print(res_cox)
 
-hr <- res$conf.int[1]
+hr <- res_cox$conf.int[1]
 procenat <- round((1 - hr) * 100, 2)
 cat("Zene imaju", procenat, "% manji rizik od muskaraca.\n")
 
